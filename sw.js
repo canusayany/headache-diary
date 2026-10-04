@@ -1,4 +1,4 @@
-const CACHE='headache-shell-v4';
+const CACHE='headache-shell-v5';
 const ASSETS=['/','/index.html','/styles.css','/app.js','/model.js','/reports.js','/charts.js','/icons/app.svg','/icons/app-192.png','/icons/app-512.png','/manifest.webmanifest'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim()));});

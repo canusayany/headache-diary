@@ -29,6 +29,69 @@ async function labels(locator) {
   })));
 }
 
+async function expectReadableA4Report(page, info) {
+  // A4 is 210 mm wide, with 11 mm margins on each side. Merely using a
+  // 794 px full-page viewport would miss overflow inside the printable area.
+  const printableWidth = Math.floor((210 - 2 * 11) * 96 / 25.4);
+  await page.setViewportSize({ width: printableWidth, height: 1024 });
+  const measurements = await page.evaluate(() => {
+    const visible = element => element.getClientRects().length > 0
+      && element.getBoundingClientRect().width > 0;
+    const contrastWithWhite = color => {
+      const channels = color.match(/[\d.]+/g)?.map(Number);
+      if (!channels || channels.length < 3) throw new Error(`Unsupported print text color: ${color}`);
+      const alpha = channels[3] ?? 1;
+      const linear = channels.slice(0, 3).map(channel => {
+        const value = (channel * alpha + 255 * (1 - alpha)) / 255;
+        return value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4;
+      });
+      return 1.05 / (.2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2] + .05);
+    };
+    const typography = (selector, svg = false) => [...document.querySelectorAll(selector)]
+      .filter(visible).map(element => {
+        const style = getComputedStyle(element);
+        const size = parseFloat(style.fontSize);
+        const transform = svg ? element.getScreenCTM() : null;
+        const effectiveSize = transform ? size * Math.hypot(transform.c, transform.d) : size;
+        const color = svg ? style.fill : style.color;
+        return {
+          element: element.tagName.toLowerCase(), classes: element.className.baseVal ?? element.className,
+          sample: element.textContent.trim().slice(0, 60), fontPx: size, effectiveFontPx: effectiveSize,
+          color, contrast: contrastWithWhite(color),
+        };
+      });
+    const bounds = [...document.querySelectorAll('.report,.headache-charts,.hc-panel,.hc-calendar-month,.hc-day,.hc-monthly-svg,.hc-monthly-svg text,table')]
+      .filter(visible).map(element => {
+        const box = element.getBoundingClientRect();
+        return { element: element.tagName.toLowerCase(), sample: element.textContent.trim().slice(0, 40), left: box.left, right: box.right };
+      });
+    return {
+      viewport: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      fontFamily: getComputedStyle(document.body).fontFamily,
+      body: typography('body'),
+      table: typography('table th,table td'),
+      supporting: typography('.fine,.notice,footer,.meta,.stat small,.hc-date,.hc-week,.hc-month-range,.hc-legend,.hc-footnote,.hc-heading>span,.hc-value small,.hc-carry'),
+      svg: typography('.hc-monthly-svg text', true),
+      bounds,
+    };
+  });
+  expect(measurements.fontFamily).toMatch(/^\s*["']?Microsoft YaHei["']?\s*,/i);
+  for (const [group, minimum] of [['body', 14.6], ['table', 13.3], ['supporting', 12], ['svg', 12]]) {
+    expect(measurements[group].length, `${group} print text is present`).toBeGreaterThan(0);
+    for (const text of measurements[group]) {
+      expect(text.effectiveFontPx, `${group} readable size: ${text.sample}`).toBeGreaterThanOrEqual(minimum);
+      expect(text.contrast, `${group} contrast against white: ${text.sample}`).toBeGreaterThanOrEqual(7);
+    }
+  }
+  expect(measurements.documentWidth).toBeLessThanOrEqual(printableWidth + 1);
+  for (const box of measurements.bounds) {
+    expect(box.left, `A4 left edge: ${box.sample}`).toBeGreaterThanOrEqual(-1);
+    expect(box.right, `A4 right edge: ${box.sample}`).toBeLessThanOrEqual(printableWidth + 1);
+  }
+  await info.attach('doctor-chart-print-legibility.json', { body: JSON.stringify(measurements, null, 2), contentType: 'application/json' });
+}
+
 test('每日与每月次数：同日三条、仅日期计一次、跨年延续不重复、未知不冒充零次', async ({ patient: page, diary }) => {
   const scenario = await openCharts(page, diary);
   await expect(page.getByRole('heading', { name: '每日头痛记录', exact: true })).toBeVisible();
@@ -292,6 +355,7 @@ test('医生HTML包含相同每日/月图与计数，无脚本且能打印实际
   await printPage.emulateMedia({ media: 'print' });
   await expect(daily).toBeVisible();
   await expect(monthly).toBeVisible();
+  await expectReadableA4Report(printPage, info);
   await printPage.screenshot({ path: info.outputPath('doctor-chart-print-layout.png'), fullPage: true });
   const pdf = await printPage.pdf({ path: info.outputPath('doctor-chart-report-a4.pdf'), format: 'A4', printBackground: true, preferCSSPageSize: true });
   expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');

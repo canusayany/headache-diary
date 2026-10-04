@@ -58,7 +58,42 @@ test('A4 PDF打印布局：三份4000字备注、多页明细和页尾均可输�
   await printPage.setContent(await fs.readFile(sourcePath,'utf8'));
   await printPage.evaluate(()=>document.fonts.ready);
   await printPage.emulateMedia({media:'print'});
-  const pdf=await printPage.pdf({path:info.outputPath('doctor-report-a4.pdf'),format:'A4',printBackground:true});
+  const printableWidth=Math.floor((210-2*11)*96/25.4);
+  await printPage.setViewportSize({width:printableWidth,height:1024});
+  const typography=await printPage.evaluate(()=>{
+    const visible=element=>element.getClientRects().length>0&&element.getBoundingClientRect().width>0;
+    const contrast=color=>{
+      const channels=color.match(/[\d.]+/g)?.map(Number);
+      if(!channels||channels.length<3)throw new Error(`Unsupported print text color: ${color}`);
+      const alpha=channels[3]??1;
+      const linear=channels.slice(0,3).map(channel=>{
+        const value=(channel*alpha+255*(1-alpha))/255;
+        return value<=.04045?value/12.92:((value+.055)/1.055)**2.4;
+      });
+      return 1.05/(.2126*linear[0]+.7152*linear[1]+.0722*linear[2]+.05);
+    };
+    const samples=selector=>[...document.querySelectorAll(selector)].filter(visible).map(element=>{
+      const style=getComputedStyle(element);
+      return {sample:element.textContent.trim().slice(0,60),fontPx:parseFloat(style.fontSize),contrast:contrast(style.color)};
+    });
+    return {body:samples('body'),cells:samples('table th,table td'),supporting:samples('.fine,.notice,footer,.meta,.stat small'),notes:samples('.note-row td'),documentWidth:document.documentElement.scrollWidth};
+  });
+  for(const [group,minimum] of [['body',14.6],['cells',13.3],['supporting',12]]){
+    expect(typography[group].length,`${group} print text is present`).toBeGreaterThan(0);
+    for(const sample of typography[group]){
+      expect(sample.fontPx,`${group} readable size: ${sample.sample}`).toBeGreaterThanOrEqual(minimum);
+      expect(sample.contrast,`${group} contrast against white: ${sample.sample}`).toBeGreaterThanOrEqual(7);
+    }
+  }
+  expect(typography.notes).toHaveLength(3);
+  expect(typography.documentWidth).toBeLessThanOrEqual(printableWidth+1);
+  for(let i=0;i<3;i++){
+    const note=printPage.locator('.note-row td').filter({hasText:`PDF_BEGIN_${i}`});
+    await expect(note).toHaveText(data.entries[i].notes);
+  }
+  await expect(printPage.locator('footer')).toContainText('本报告由本地头痛记录软件生成');
+  await info.attach('doctor-report-print-legibility.json',{body:JSON.stringify(typography,null,2),contentType:'application/json'});
+  const pdf=await printPage.pdf({path:info.outputPath('doctor-report-a4.pdf'),format:'A4',printBackground:true,preferCSSPageSize:true});
   expect(pdf.subarray(0,5).toString()).toBe('%PDF-');
   expect(pdf.length).toBeGreaterThan(10000);
   await info.attach('doctor-report-a4.pdf',{body:pdf,contentType:'application/pdf'});

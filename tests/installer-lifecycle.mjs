@@ -167,12 +167,22 @@ try {
   assert.ok(reportHtml.includes('data-testid="monthly-headache-chart"'));
   assert.ok(!/<script\b/i.test(reportHtml));
   const pdfPage = await context.newPage(); await pdfPage.setContent(reportHtml);
+  await pdfPage.evaluate(() => document.fonts.ready);
+  await pdfPage.emulateMedia({ media: 'print' });
+  const printSizes = await pdfPage.evaluate(() => ({
+    body: parseFloat(getComputedStyle(document.body).fontSize),
+    table: Math.min(...[...document.querySelectorAll('table th,table td')]
+      .filter(element => element.getClientRects().length && element.getBoundingClientRect().width > 0)
+      .map(element => parseFloat(getComputedStyle(element).fontSize))),
+    calendarDate: parseFloat(getComputedStyle(document.querySelector('.hc-date')).fontSize),
+  }));
+  assert.ok(printSizes.body >= 14.6 && Number.isFinite(printSizes.table) && printSizes.table >= 13.3 && printSizes.calendarDate >= 12, `Installed report must retain readable physical print sizes: ${JSON.stringify(printSizes)}`);
   await pdfPage.pdf({ path: path.join(evidenceRoot, 'synthetic-report.pdf'), format: 'A4', printBackground: true, preferCSSPageSize: true });
   await context.close(); await browser.close(); browser = null;
   const savedHash = await hashFile(path.join(dataRoot, 'state.json'));
   const backupFiles = await fs.readdir(path.join(dataRoot, 'backups'));
   assert.ok(backupFiles.length >= 1);
-  note('patient-one-click-and-exports', { clicksPerHeadache: 1, requiresEndingStep: false, recordMs, dark: true, chartCountsVerified: true, exports: ['JSON', 'CSV', 'HTML', 'A4 PDF'], backupCount: backupFiles.length });
+  note('patient-one-click-and-exports', { clicksPerHeadache: 1, requiresEndingStep: false, recordMs, dark: true, chartCountsVerified: true, printSizes, exports: ['JSON', 'CSV', 'HTML', 'A4 PDF'], backupCount: backupFiles.length });
 
   const upgrade = await install('upgrade-install.log');
   assert.equal(await hashFile(path.join(dataRoot, 'state.json')), savedHash);
